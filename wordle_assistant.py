@@ -10,6 +10,7 @@ import copy
 import os
 import random
 import sys
+from datetime import datetime
 from itertools import combinations, permutations as _iperm
 from typing import Dict, List, Set, Tuple
 
@@ -135,6 +136,7 @@ def _read_csv(path: str) -> List[str]:
 _BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "words-list")
 ANSWER_WORDS: List[str] = _read_csv(os.path.join(_BASE, "word-bank.csv")) or _EMBEDDED
 VALID_WORDS:  List[str] = _read_csv(os.path.join(_BASE, "valid-words.csv")) or ANSWER_WORDS
+_NOTES_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "notes.txt")
 
 # Session state — persists across permutation runs until "new game"
 _session: Dict[str, str] = {"opening": ""}
@@ -708,6 +710,22 @@ def _find_probe_words(unknown_letters: Set[str], answer_pool_set: Set[str]) -> T
 
 
 # ---------------------------------------------------------------------------
+# Note saver
+# ---------------------------------------------------------------------------
+def _save_note() -> None:
+    print()
+    print("  Type your note (feature idea, fix, or comment) then press Enter:")
+    text = input("  > ").strip()
+    if not text:
+        print("  (nothing saved)")
+        return
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    with open(_NOTES_FILE, "a", encoding="utf-8") as fh:
+        fh.write(f"[{stamp}] {text}\n")
+    print(f"  Saved to notes.txt")
+
+
+# ---------------------------------------------------------------------------
 # Menu handlers
 # ---------------------------------------------------------------------------
 def show_tandems(ask_pool: bool = True) -> None:
@@ -755,10 +773,11 @@ def run_permutations() -> bool:
     print("  Enter your first guess result:")
     print("  Bulk: WORD colors  (g=green, y=yellow, b=black)  e.g. TRAIN bybyg")
     print("  Press Enter to use manual green / yellow / gray input instead.")
-    history.append(copy.deepcopy((greens, yellows, gray, guess_count)))
+    init_snap = copy.deepcopy((greens, yellows, gray, guess_count))
     while True:
         raw = input("  bulk> ").strip()
         if not raw:
+            history.append((init_snap, ""))
             _collect_greens(greens)
             _collect_yellows(yellows)
             _collect_gray(gray)
@@ -766,6 +785,7 @@ def run_permutations() -> bool:
         if raw.lower() in ('q', 'quit'):
             return False
         if _parse_bulk(raw, greens, yellows, gray):
+            history.append((init_snap, raw))
             break
     guess_count += 1
     _check_conflicts(greens, yellows, gray)
@@ -809,9 +829,12 @@ def run_permutations() -> bool:
             if lip:
                 print(f"  Letters still in play: {lip}")
                 unknown_set = set(lip.split())
-                probes, ptarget = _find_probe_words(unknown_set, set(answer_matches))
+                yellow_set = set(yellows.keys())
+                scoring_set = unknown_set | yellow_set if len(unknown_set) < 5 and yellow_set else unknown_set
+                probes, ptarget = _find_probe_words(scoring_set, set(answer_matches))
                 if probes:
-                    print(f"  Probe words ({ptarget}/{len(unknown_set)} unknowns): {'  '.join(w.upper() for w in probes)}")
+                    lbl = f"{ptarget}/{len(scoring_set)} unknowns+yellows" if scoring_set is not unknown_set else f"{ptarget}/{len(unknown_set)} unknowns"
+                    print(f"  Probe words ({lbl}): {'  '.join(w.upper() for w in probes)}")
         else:
             valid_matches = find_word_matches(greens, yellows, gray, word_list=VALID_WORDS)
             valid_count = len(valid_matches)
@@ -820,9 +843,12 @@ def run_permutations() -> bool:
             if lip:
                 print(f"  Letters still in play: {lip}")
                 unknown_set = set(lip.split())
-                probes, ptarget = _find_probe_words(unknown_set, set(valid_matches))
+                yellow_set = set(yellows.keys())
+                scoring_set = unknown_set | yellow_set if len(unknown_set) < 5 and yellow_set else unknown_set
+                probes, ptarget = _find_probe_words(scoring_set, set(valid_matches))
                 if probes:
-                    print(f"  Probe words ({ptarget}/{len(unknown_set)} unknowns): {'  '.join(w.upper() for w in probes)}")
+                    lbl = f"{ptarget}/{len(scoring_set)} unknowns+yellows" if scoring_set is not unknown_set else f"{ptarget}/{len(unknown_set)} unknowns"
+                    print(f"  Probe words ({lbl}): {'  '.join(w.upper() for w in probes)}")
 
         # ---- opening reminder (hide once 15 letters known) ----
         constraint_size = len(greens) + len(yellows) + len(gray)
@@ -839,7 +865,8 @@ def run_permutations() -> bool:
                 print("  e  Edit constraints            x  Show eliminated candidates")
             else:
                 print("  e  Edit constraints")
-            print("  n  New game    u  Undo last guess    q  Done")
+            print("  c  Correct a guess    n  New game    f  Save a note")
+            print("  u  Undo last guess    q  Done")
             action = input("  > ").strip().lower()
 
             if action in ('b', ''):
@@ -852,14 +879,13 @@ def run_permutations() -> bool:
                     raw = input("  bulk> ").strip()
                     if not raw:
                         break
-                    history.append(copy.deepcopy((greens, yellows, gray, guess_count)))
+                    snap = copy.deepcopy((greens, yellows, gray, guess_count))
                     if _parse_bulk(raw, greens, yellows, gray):
+                        history.append((snap, raw))
                         _check_conflicts(greens, yellows, gray)
                         guess_count += 1
                         applied = True
                         break
-                    else:
-                        history.pop()
                 if applied:
                     break
 
@@ -868,7 +894,7 @@ def run_permutations() -> bool:
                 _show_word_matches(greens, yellows, gray)
 
             elif action == 'm':
-                history.append(copy.deepcopy((greens, yellows, gray, guess_count)))
+                history.append((copy.deepcopy((greens, yellows, gray, guess_count)), ""))
                 _print_summary(greens, yellows, gray)
                 _collect_greens(greens)
                 _collect_yellows(yellows)
@@ -881,7 +907,7 @@ def run_permutations() -> bool:
                 _print_summary(greens, yellows, gray)
 
             elif action == 'e':
-                history.append(copy.deepcopy((greens, yellows, gray, guess_count)))
+                history.append((copy.deepcopy((greens, yellows, gray, guess_count)), ""))
                 _edit_constraints(greens, yellows, gray)
                 break
 
@@ -893,24 +919,94 @@ def run_permutations() -> bool:
                 if not history:
                     print("  Nothing to undo.")
                 else:
-                    snap_g, snap_y, snap_gray, snap_count = history.pop()
+                    (snap_g, snap_y, snap_gray, snap_count), _ = history.pop()
                     greens.clear();  greens.update(snap_g)
                     yellows.clear(); yellows.update(snap_y)
                     gray.clear();    gray.update(snap_gray)
                     guess_count = snap_count
                     break
 
+            elif action == 'c':
+                bulk_entries = [(i, raw) for i, (snap, raw) in enumerate(history) if raw]
+                if not bulk_entries:
+                    print("  No guesses to correct.")
+                else:
+                    print()
+                    for num, (_, raw) in enumerate(bulk_entries, 1):
+                        parts = raw.strip().split()
+                        disp = f"{parts[0].upper()} {parts[1].lower()}" if len(parts) >= 2 else raw.upper()
+                        print(f"  {num}. {disp}")
+                    print()
+                    sel = input("  Select guess number to correct (Enter to cancel): ").strip()
+                    if sel.isdigit() and 1 <= int(sel) <= len(bulk_entries):
+                        sel_n   = int(sel) - 1
+                        hist_pos, old_raw = bulk_entries[sel_n]
+                        snap_before      = history[hist_pos][0]
+                        subsequent_raws  = [r for _, r in history[hist_pos + 1:] if r]
+
+                        # Save current state for cancellation
+                        save_hist    = list(history)
+                        save_greens  = copy.deepcopy(greens)
+                        save_yellows = copy.deepcopy(yellows)
+                        save_gray    = copy.deepcopy(gray)
+                        save_count   = guess_count
+
+                        # Restore to just before selected guess
+                        s_g, s_y, s_gray, s_count = snap_before
+                        greens.clear();  greens.update(s_g)
+                        yellows.clear(); yellows.update(s_y)
+                        gray.clear();    gray.update(s_gray)
+                        guess_count = s_count
+
+                        parts    = old_raw.strip().split()
+                        old_disp = f"{parts[0].upper()} {parts[1].lower()}" if len(parts) >= 2 else old_raw.upper()
+                        print()
+                        print(f"  Replacing: {old_disp}")
+                        print("  Enter corrected guess (Enter to cancel):")
+                        print("  Colors: g = green, y = yellow, b = black/gray")
+                        raw_new = input("  bulk> ").strip()
+
+                        if not raw_new:
+                            greens.clear();  greens.update(save_greens)
+                            yellows.clear(); yellows.update(save_yellows)
+                            gray.clear();    gray.update(save_gray)
+                            guess_count  = save_count
+                            history[:]   = save_hist
+                            print("  Correction cancelled.")
+                        elif _parse_bulk(raw_new, greens, yellows, gray):
+                            new_hist = list(history[:hist_pos])
+                            new_hist.append((snap_before, raw_new))
+                            guess_count += 1
+                            for r in subsequent_raws:
+                                new_hist.append((copy.deepcopy((greens, yellows, gray, guess_count)), r))
+                                _parse_bulk(r, greens, yellows, gray)
+                                guess_count += 1
+                            history[:] = new_hist
+                            _check_conflicts(greens, yellows, gray)
+                            break
+                        else:
+                            greens.clear();  greens.update(save_greens)
+                            yellows.clear(); yellows.update(save_yellows)
+                            gray.clear();    gray.update(save_gray)
+                            guess_count  = save_count
+                            history[:]   = save_hist
+                    elif sel:
+                        print("  Invalid selection.")
+
             elif action == 'n':
                 _session["opening"] = ""
                 show_tandems(ask_pool=False)
                 return True
+
+            elif action == 'f':
+                _save_note()
 
             elif action in ('q', 'quit'):
                 print()
                 return False
 
             else:
-                print("  Enter s, m, p, e, x, n, u, or q.")
+                print("  Enter s, m, p, e, x, c, n, f, u, or q.")
 
 
 # ---------------------------------------------------------------------------
@@ -927,6 +1023,7 @@ def main() -> None:
             print("  1  New tandem suggestions")
             print("  2  Permutation explorer")
             print("  n  New game")
+            print("  f  Save a note")
             print("  q  Quit")
             print()
             choice = input("  Choice: ").strip().lower()
@@ -940,11 +1037,13 @@ def main() -> None:
                 show_tandems(ask_pool=False)
                 while run_permutations():
                     pass
+            elif choice == 'f':
+                _save_note()
             elif choice in ('q', 'quit', 'exit'):
                 print("\n  Good luck!\n")
                 break
             else:
-                print("  Enter 1, 2, n, or q.")
+                print("  Enter 1, 2, n, f, or q.")
     except (KeyboardInterrupt, EOFError):
         print("\n\n  Good luck!\n")
 
