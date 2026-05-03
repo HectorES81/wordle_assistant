@@ -149,8 +149,8 @@ FREQ: Dict[str, int] = {
     'v': 153, 'z':  40, 'x':  37, 'j':  27, 'q':  19,
 }
 
-# Minimum unknown-position letters a probe word must cover; falls back to 3 if none found
-PROBE_MATCH_TARGET = 4
+# Starting coverage target for probe words; falls back to 4 → 3 → 2 if no words found
+PROBE_MATCH_TARGET = 5
 
 
 def _word_score(word: str, exclude: Set[str] = frozenset()) -> int:
@@ -612,13 +612,33 @@ def _show_eliminated(greens: Dict[int, str], yellows: Dict[str, List[int]], gray
 
 
 def _show_arrangements(arrangements: List[str]) -> None:
-    n = len(arrangements)
-    cols, cell_w = 4, 11
-    print(f"  {'Pos 1 2 3 4 5':<{cell_w}}" * min(cols, n))
-    print(f"  {'-----------':<{cell_w}}" * min(cols, n))
-    for start in range(0, n, cols):
-        row = arrangements[start : start + cols]
-        print("  " + "  ".join(f"{' '.join(arr):<9}" for arr in row))
+    if not arrangements:
+        return
+    # Sort: uppercase A-Z first, then _ (ord('_')=95 > ord('Z')=90)
+    sorted_arr = sorted(arrangements)
+    # Group by first character so each new lead letter starts a fresh row
+    groups: List[List[str]] = []
+    cur_key = ''
+    cur: List[str] = []
+    for arr in sorted_arr:
+        if arr[0] != cur_key:
+            if cur:
+                groups.append(cur)
+            cur = [arr]
+            cur_key = arr[0]
+        else:
+            cur.append(arr)
+    if cur:
+        groups.append(cur)
+    cols = 4
+    print("  Pos 1 2 3 4 5")
+    print("  -----------")
+    for i, group in enumerate(groups):
+        if i > 0:
+            print()
+        for start in range(0, len(group), cols):
+            row = group[start:start + cols]
+            print("  " + "  ".join(f"{' '.join(arr):<9}" for arr in row))
 
 
 def _show_word_matches(greens: Dict[int, str], yellows: Dict[str, List[int]], gray: Set[str]) -> None:
@@ -650,13 +670,15 @@ def _show_word_matches(greens: Dict[int, str], yellows: Dict[str, List[int]], gr
 # ---------------------------------------------------------------------------
 # Letters-in-play helper
 # ---------------------------------------------------------------------------
-def _letters_in_play(matches: List[str], greens: Dict[int, str]) -> str:
-    """Union of letters in non-green positions across all matching words, sorted."""
-    locked = set(greens.keys())
+def _letters_in_play(matches: List[str], greens: Dict[int, str],
+                     yellows: Dict[str, List[int]]) -> str:
+    """Letters still undiscovered: appear in remaining answers but are not yet confirmed (not green, not yellow)."""
+    locked_positions = set(greens.keys())
+    known_letters = set(greens.values()) | set(yellows.keys())
     letters: Set[str] = set()
     for word in matches:
         for i, ch in enumerate(word.upper()):
-            if i not in locked:
+            if i not in locked_positions and ch not in known_letters:
                 letters.add(ch)
     return ' '.join(sorted(letters))
 
@@ -666,23 +688,21 @@ def _letters_in_play(matches: List[str], greens: Dict[int, str]) -> str:
 # ---------------------------------------------------------------------------
 def _find_probe_words(unknown_letters: Set[str], answer_pool_set: Set[str]) -> Tuple[List[str], int]:
     """
-    Find up to 3 words from VALID_WORDS (excluding answer_pool_set) that cover
-    the most letters from unknown_letters.  Starts at PROBE_MATCH_TARGET,
-    falls back to 3 if no words qualify.  Returns (words, actual_target).
+    Find up to 5 words from VALID_WORDS (excluding answer_pool_set) that cover
+    the most letters from unknown_letters.  Tries PROBE_MATCH_TARGET down to 2.
+    Candidates are shuffled so repeated calls surface different words.
+    Returns (words, actual_target).
     """
     if not unknown_letters:
         return [], 0
     candidates = [w for w in VALID_WORDS if w not in answer_pool_set]
+    random.shuffle(candidates)
     target = PROBE_MATCH_TARGET
-    while target >= 3:
-        scored = []
-        for word in candidates:
-            coverage = len(unknown_letters & set(word.upper()))
-            if coverage >= target:
-                scored.append((-coverage, -_word_score(word), word))
-        if scored:
-            scored.sort()
-            return [w for _, _, w in scored[:3]], target
+    while target >= 2:
+        qualifying = [w for w in candidates
+                      if len(unknown_letters & set(w.upper())) >= target]
+        if qualifying:
+            return qualifying[:5], target
         target -= 1
     return [], 0
 
@@ -743,6 +763,8 @@ def run_permutations() -> bool:
             _collect_yellows(yellows)
             _collect_gray(gray)
             break
+        if raw.lower() in ('q', 'quit'):
+            return False
         if _parse_bulk(raw, greens, yellows, gray):
             break
     guess_count += 1
@@ -783,22 +805,24 @@ def run_permutations() -> bool:
         print()
         if answer_count:
             print(f"  {answer_count} word(s) in the answer bank fit these constraints.")
-            lip = _letters_in_play(answer_matches, greens)
+            lip = _letters_in_play(answer_matches, greens, yellows)
             if lip:
                 print(f"  Letters still in play: {lip}")
-                probes, ptarget = _find_probe_words(set(lip.split()), set(answer_matches))
+                unknown_set = set(lip.split())
+                probes, ptarget = _find_probe_words(unknown_set, set(answer_matches))
                 if probes:
-                    print(f"  Probe words (tests {ptarget} unknown letters): {'  '.join(w.upper() for w in probes)}")
+                    print(f"  Probe words ({ptarget}/{len(unknown_set)} unknowns): {'  '.join(w.upper() for w in probes)}")
         else:
             valid_matches = find_word_matches(greens, yellows, gray, word_list=VALID_WORDS)
             valid_count = len(valid_matches)
             print(f"  0 answer-bank matches  ({valid_count} in full valid-word list).")
-            lip = _letters_in_play(valid_matches, greens)
+            lip = _letters_in_play(valid_matches, greens, yellows)
             if lip:
                 print(f"  Letters still in play: {lip}")
-                probes, ptarget = _find_probe_words(set(lip.split()), set(valid_matches))
+                unknown_set = set(lip.split())
+                probes, ptarget = _find_probe_words(unknown_set, set(valid_matches))
                 if probes:
-                    print(f"  Probe words (tests {ptarget} unknown letters): {'  '.join(w.upper() for w in probes)}")
+                    print(f"  Probe words ({ptarget}/{len(unknown_set)} unknowns): {'  '.join(w.upper() for w in probes)}")
 
         # ---- opening reminder (hide once 15 letters known) ----
         constraint_size = len(greens) + len(yellows) + len(gray)
@@ -895,6 +919,8 @@ def run_permutations() -> bool:
 def main() -> None:
     _banner()
     show_tandems(ask_pool=False)
+    while run_permutations():
+        pass
     try:
         while True:
             print()
