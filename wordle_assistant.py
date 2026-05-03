@@ -719,7 +719,7 @@ def show_tandems(ask_pool: bool = True) -> None:
             print(f"  Saved: {_session['opening']}")
 
 
-def run_permutations() -> None:
+def run_permutations() -> bool:
     print()
     print("  Positions are numbered 1-5 (left to right).")
     print("  Blanks ( _ ) in output = position not yet known.")
@@ -751,7 +751,7 @@ def run_permutations() -> None:
     while True:
         if not greens and not yellows and not gray:
             print("  Nothing entered.")
-            return
+            return False
 
         arrangements = generate_arrangements(greens, yellows)
         n = len(arrangements)
@@ -809,16 +809,16 @@ def run_permutations() -> None:
         show_x = guess_count >= 2 or constraint_size >= 10
         while True:
             print()
-            print("  b  Bulk-enter a guess     s  Show word matches")
-            print("  m  Add more clues         p  Print constraint summary")
+            print("  [Enter]  Enter next guess      s  Show word matches")
+            print("  m  Add more clues              p  Print constraint summary")
             if show_x:
-                print("  e  Edit constraints       x  Show eliminated candidates")
+                print("  e  Edit constraints            x  Show eliminated candidates")
             else:
                 print("  e  Edit constraints")
-            print("  u  Undo last guess        q  Done")
+            print("  n  New game    u  Undo last guess    q  Done")
             action = input("  > ").strip().lower()
 
-            if action == 'b':
+            if action in ('b', ''):
                 print()
                 print("  Enter word and colors on one line  (blank to cancel):")
                 print("  Colors: g = green, y = yellow, b = black/gray")
@@ -876,12 +876,17 @@ def run_permutations() -> None:
                     guess_count = snap_count
                     break
 
-            elif action in ('q', 'quit', ''):
+            elif action == 'n':
+                _session["opening"] = ""
+                show_tandems(ask_pool=False)
+                return True
+
+            elif action in ('q', 'quit'):
                 print()
-                return
+                return False
 
             else:
-                print("  Enter b, s, m, p, e, u, or q.")
+                print("  Enter s, m, p, e, x, n, u, or q.")
 
 
 # ---------------------------------------------------------------------------
@@ -902,11 +907,13 @@ def main() -> None:
             if choice == '1':
                 show_tandems()
             elif choice == '2':
-                run_permutations()
+                while run_permutations():
+                    pass
             elif choice == 'n':
                 _session["opening"] = ""
-                print("  Ready. Starting fresh.")
-                show_tandems()
+                show_tandems(ask_pool=False)
+                while run_permutations():
+                    pass
             elif choice in ('q', 'quit', 'exit'):
                 print("\n  Good luck!\n")
                 break
