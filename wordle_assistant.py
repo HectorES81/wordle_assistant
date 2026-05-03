@@ -6,6 +6,7 @@ Wordle Assistant
   2. Permutation explorer        (all valid 5-slot arrangements of known letters)
 """
 
+import copy
 import os
 import random
 import sys
@@ -135,6 +136,9 @@ _BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "words-list")
 ANSWER_WORDS: List[str] = _read_csv(os.path.join(_BASE, "word-bank.csv")) or _EMBEDDED
 VALID_WORDS:  List[str] = _read_csv(os.path.join(_BASE, "valid-words.csv")) or ANSWER_WORDS
 
+# Session state — persists across permutation runs until "new game"
+_session: Dict[str, str] = {"opening": ""}
+
 # ---------------------------------------------------------------------------
 # Letter frequency weights (Wordle answer corpus approximation)
 # ---------------------------------------------------------------------------
@@ -144,6 +148,9 @@ FREQ: Dict[str, int] = {
     'p': 367, 'g': 311, 'm': 309, 'b': 281, 'f': 230, 'k': 210, 'w': 195,
     'v': 153, 'z':  40, 'x':  37, 'j':  27, 'q':  19,
 }
+
+# Minimum unknown-position letters a probe word must cover; falls back to 3 if none found
+PROBE_MATCH_TARGET = 4
 
 
 def _word_score(word: str, exclude: Set[str] = frozenset()) -> int:
@@ -641,6 +648,46 @@ def _show_word_matches(greens: Dict[int, str], yellows: Dict[str, List[int]], gr
 
 
 # ---------------------------------------------------------------------------
+# Letters-in-play helper
+# ---------------------------------------------------------------------------
+def _letters_in_play(matches: List[str], greens: Dict[int, str]) -> str:
+    """Union of letters in non-green positions across all matching words, sorted."""
+    locked = set(greens.keys())
+    letters: Set[str] = set()
+    for word in matches:
+        for i, ch in enumerate(word.upper()):
+            if i not in locked:
+                letters.add(ch)
+    return ' '.join(sorted(letters))
+
+
+# ---------------------------------------------------------------------------
+# Probe-word finder
+# ---------------------------------------------------------------------------
+def _find_probe_words(unknown_letters: Set[str], answer_pool_set: Set[str]) -> Tuple[List[str], int]:
+    """
+    Find up to 3 words from VALID_WORDS (excluding answer_pool_set) that cover
+    the most letters from unknown_letters.  Starts at PROBE_MATCH_TARGET,
+    falls back to 3 if no words qualify.  Returns (words, actual_target).
+    """
+    if not unknown_letters:
+        return [], 0
+    candidates = [w for w in VALID_WORDS if w not in answer_pool_set]
+    target = PROBE_MATCH_TARGET
+    while target >= 3:
+        scored = []
+        for word in candidates:
+            coverage = len(unknown_letters & set(word.upper()))
+            if coverage >= target:
+                scored.append((-coverage, -_word_score(word), word))
+        if scored:
+            scored.sort()
+            return [w for _, _, w in scored[:3]], target
+        target -= 1
+    return [], 0
+
+
+# ---------------------------------------------------------------------------
 # Menu handlers
 # ---------------------------------------------------------------------------
 def show_tandems(ask_pool: bool = True) -> None:
@@ -663,6 +710,13 @@ def show_tandems(ask_pool: bool = True) -> None:
         print(f"  {i:>3}. {w1.upper():<9} {w2.upper():<9} {w3.upper():<9} {cov} unique")
     _hr()
     print("  Tip: any row eliminates up to 15 letters in 3 guesses.\n")
+    sel = input("  Select a row to use as your opening (or press Enter to skip): ").strip()
+    if sel.isdigit():
+        idx = int(sel) - 1
+        if 0 <= idx < len(tandems):
+            w1, w2, w3 = tandems[idx]
+            _session["opening"] = f"{w1.upper()} \xb7 {w2.upper()} \xb7 {w3.upper()}"
+            print(f"  Saved: {_session['opening']}")
 
 
 def run_permutations() -> None:
@@ -671,14 +725,17 @@ def run_permutations() -> None:
     print("  Blanks ( _ ) in output = position not yet known.")
     print()
 
-    greens:  Dict[int, str]        = {}
-    yellows: Dict[str, List[int]]  = {}
-    gray:    Set[str]              = set()
-
+    greens:  Dict[int, str]       = {}
+    yellows: Dict[str, List[int]] = {}
+    gray:    Set[str]             = set()
     guess_count = 0
+    history: List = []
+
+    # ---- first guess ----
     print("  Enter your first guess result:")
     print("  Bulk: WORD colors  (g=green, y=yellow, b=black)  e.g. TRAIN bybyg")
     print("  Press Enter to use manual green / yellow / gray input instead.")
+    history.append(copy.deepcopy((greens, yellows, gray, guess_count)))
     while True:
         raw = input("  bulk> ").strip()
         if not raw:
@@ -720,40 +777,48 @@ def run_permutations() -> None:
         else:
             _show_arrangements(arrangements)
 
-        # ---- answer count ----
-        answer_count = len(find_word_matches(greens, yellows, gray))
+        # ---- answer count + letters in play ----
+        answer_matches = find_word_matches(greens, yellows, gray)
+        answer_count = len(answer_matches)
         print()
         if answer_count:
             print(f"  {answer_count} word(s) in the answer bank fit these constraints.")
+            lip = _letters_in_play(answer_matches, greens)
+            if lip:
+                print(f"  Letters still in play: {lip}")
+                probes, ptarget = _find_probe_words(set(lip.split()), set(answer_matches))
+                if probes:
+                    print(f"  Probe words (tests {ptarget} unknown letters): {'  '.join(w.upper() for w in probes)}")
         else:
-            valid_count = len(find_word_matches(greens, yellows, gray, word_list=VALID_WORDS))
+            valid_matches = find_word_matches(greens, yellows, gray, word_list=VALID_WORDS)
+            valid_count = len(valid_matches)
             print(f"  0 answer-bank matches  ({valid_count} in full valid-word list).")
+            lip = _letters_in_play(valid_matches, greens)
+            if lip:
+                print(f"  Letters still in play: {lip}")
+                probes, ptarget = _find_probe_words(set(lip.split()), set(valid_matches))
+                if probes:
+                    print(f"  Probe words (tests {ptarget} unknown letters): {'  '.join(w.upper() for w in probes)}")
+
+        # ---- opening reminder (hide once 15 letters known) ----
+        constraint_size = len(greens) + len(yellows) + len(gray)
+        if _session["opening"] and constraint_size < 15:
+            print(f"  Opening: {_session['opening']}")
 
         # ---- action menu ----
-        show_x = guess_count >= 2 or len(greens) + len(yellows) + len(gray) >= 10
+        show_x = guess_count >= 2 or constraint_size >= 10
         while True:
             print()
-            print("  s  Show word matches      m  Add more clues")
-            print("  b  Bulk-enter a guess     e  Edit / correct constraints")
+            print("  b  Bulk-enter a guess     s  Show word matches")
+            print("  m  Add more clues         p  Print constraint summary")
             if show_x:
-                print("  x  Show eliminated candidates")
-            print("  q  Done")
+                print("  e  Edit constraints       x  Show eliminated candidates")
+            else:
+                print("  e  Edit constraints")
+            print("  u  Undo last guess        q  Done")
             action = input("  > ").strip().lower()
 
-            if action == 's':
-                print()
-                _show_word_matches(greens, yellows, gray)
-
-            elif action == 'm':
-                _print_summary(greens, yellows, gray)
-                _collect_greens(greens)
-                _collect_yellows(yellows)
-                _collect_gray(gray)
-                _check_conflicts(greens, yellows, gray)
-                guess_count += 1
-                break
-
-            elif action == 'b':
+            if action == 'b':
                 print()
                 print("  Enter word and colors on one line  (blank to cancel):")
                 print("  Colors: g = green, y = yellow, b = black/gray")
@@ -763,15 +828,36 @@ def run_permutations() -> None:
                     raw = input("  bulk> ").strip()
                     if not raw:
                         break
+                    history.append(copy.deepcopy((greens, yellows, gray, guess_count)))
                     if _parse_bulk(raw, greens, yellows, gray):
                         _check_conflicts(greens, yellows, gray)
+                        guess_count += 1
                         applied = True
                         break
+                    else:
+                        history.pop()
                 if applied:
-                    guess_count += 1
                     break
 
+            elif action == 's':
+                print()
+                _show_word_matches(greens, yellows, gray)
+
+            elif action == 'm':
+                history.append(copy.deepcopy((greens, yellows, gray, guess_count)))
+                _print_summary(greens, yellows, gray)
+                _collect_greens(greens)
+                _collect_yellows(yellows)
+                _collect_gray(gray)
+                _check_conflicts(greens, yellows, gray)
+                guess_count += 1
+                break
+
+            elif action == 'p':
+                _print_summary(greens, yellows, gray)
+
             elif action == 'e':
+                history.append(copy.deepcopy((greens, yellows, gray, guess_count)))
                 _edit_constraints(greens, yellows, gray)
                 break
 
@@ -779,12 +865,23 @@ def run_permutations() -> None:
                 print()
                 _show_eliminated(greens, yellows, gray)
 
+            elif action == 'u':
+                if not history:
+                    print("  Nothing to undo.")
+                else:
+                    snap_g, snap_y, snap_gray, snap_count = history.pop()
+                    greens.clear();  greens.update(snap_g)
+                    yellows.clear(); yellows.update(snap_y)
+                    gray.clear();    gray.update(snap_gray)
+                    guess_count = snap_count
+                    break
+
             elif action in ('q', 'quit', ''):
                 print()
                 return
 
             else:
-                print("  Enter s, m, b, e, or q.")
+                print("  Enter b, s, m, p, e, u, or q.")
 
 
 # ---------------------------------------------------------------------------
@@ -798,6 +895,7 @@ def main() -> None:
             print()
             print("  1  New tandem suggestions")
             print("  2  Permutation explorer")
+            print("  n  New game")
             print("  q  Quit")
             print()
             choice = input("  Choice: ").strip().lower()
@@ -805,11 +903,15 @@ def main() -> None:
                 show_tandems()
             elif choice == '2':
                 run_permutations()
-            elif choice in ('q', 'quit', 'exit', '3'):
+            elif choice == 'n':
+                _session["opening"] = ""
+                print("  Ready. Starting fresh.")
+                show_tandems()
+            elif choice in ('q', 'quit', 'exit'):
                 print("\n  Good luck!\n")
                 break
             else:
-                print("  Enter 1, 2, or q.")
+                print("  Enter 1, 2, n, or q.")
     except (KeyboardInterrupt, EOFError):
         print("\n\n  Good luck!\n")
 
